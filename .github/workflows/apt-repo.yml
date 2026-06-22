@@ -67,6 +67,9 @@ jobs:
           DEB_BUILD_PROFILES: nocheck
         with:
           docker-image: debian:${{ matrix.codename }}
+          # The bookworm slim image has no ca-certificates, which the HTTPS
+          # FRR repo (used for libyang) needs.
+          setup-hook: ${{ matrix.codename == 'bookworm' && 'apt-get update && apt-get install -y --no-install-recommends ca-certificates' || '' }}
           extra-build-deps: devscripts
           extra-repos: ${{ matrix.codename == 'bookworm' && 'deb https://deb.frrouting.org/frr bookworm frr-stable' || '' }}
           extra-repo-keys: ${{ matrix.codename == 'bookworm' && 'frr-repo-key.asc' || '' }}
