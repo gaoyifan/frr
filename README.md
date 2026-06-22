@@ -28,13 +28,17 @@ sudo vtysh -c 'show mpls table 18'
 ip -M route show | grep '^18 '      # -> 18 dev dummy0 proto static
 ```
 
-## Install from the APT repository (Debian 13 "trixie", amd64)
+## Install from the APT repository (Debian 13 "trixie", amd64 / arm64)
 
-Prebuilt, signed packages are published to GitHub Pages by the
-[`Publish APT repo`](.github/workflows/apt-repo.yml) workflow
-(built in a `debian:trixie` container via
+Prebuilt, signed packages for **amd64 and arm64** are published to GitHub Pages
+by the [`Publish APT repo`](.github/workflows/apt-repo.yml) workflow. Each
+architecture is built natively (amd64 on `ubuntu-latest`, arm64 on
+`ubuntu-24.04-arm`) in a `debian:trixie` container via
 [`jtdor/build-deb-action`](https://github.com/jtdor/build-deb-action) and
-packaged with [`morph027/apt-repo-action`](https://github.com/morph027/apt-repo-action)).
+packaged with [`morph027/apt-repo-action`](https://github.com/morph027/apt-repo-action).
+
+`apt` automatically selects packages matching your machine's architecture
+(`dpkg --print-architecture`).
 
 ```bash
 # Remove the official FRR repo first to avoid version conflicts (if present):

@@ -1,8 +1,9 @@
 ---
 name: Publish APT repo
 
-# Build the patched FRR Debian packages inside a Debian trixie container and
-# publish them as a signed APT repository on GitHub Pages.
+# Build the patched FRR Debian packages natively for amd64 and arm64 inside a
+# Debian trixie container, then publish them as a signed APT repository on
+# GitHub Pages.
 
 on:
   push:
@@ -24,19 +25,24 @@ concurrency:
 env:
   CODENAME: trixie
   COMPONENTS: main
-  ARCHITECTURES: amd64
+  ARCHITECTURES: amd64 arm64
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build FRR .deb (Debian trixie)
+      - name: Build FRR .deb (Debian trixie, ${{ matrix.arch }})
         uses: jtdor/build-deb-action@v1
         env:
           DEB_BUILD_OPTIONS: nocheck noautodbgsym
@@ -46,13 +52,37 @@ jobs:
           buildpackage-opts: --build=binary --no-sign
 
       # The build container runs as root, so debian/artifacts is root-owned.
-      # Copy the .deb files into a runner-writable directory for apt-repo-action.
+      # Copy the .deb files into a runner-writable directory for upload.
       - name: Collect packages
         run: |
           mkdir -p packages
           sudo cp debian/artifacts/*.deb packages/
           sudo chown -R "$(id -u):$(id -g)" packages
           ls -l packages
+
+      - name: Upload packages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.arch }}
+          path: packages/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debs-*
+          merge-multiple: true
+          path: packages
+
+      - name: List packages
+        run: ls -l packages
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -81,6 +111,8 @@ jobs:
         run: |
           {
             echo '## APT repo published :rocket:'
+            echo ''
+            echo "Architectures: ${{ env.ARCHITECTURES }}"
             echo ''
             echo '```bash'
             echo "sudo curl -sfLo /etc/apt/keyrings/frr-keyring.asc ${{ steps.deployment.outputs.page_url }}gpg.key"
