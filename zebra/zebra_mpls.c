@@ -670,9 +670,19 @@ static int nhlfe_nexthop_active_ipv4(struct zebra_nhlfe *nhlfe,
 
 		for (match_nh = match->nhe->nhg.nexthop; match_nh;
 		     match_nh = match_nh->next) {
+			/*
+			 * Accept the resolving route if it is connected/local,
+			 * if it already shares the nexthop's interface, or if it
+			 * is an on-link route reachable directly via an
+			 * interface with no gateway (e.g. a /32 link route such
+			 * as "ip route add 10.0.0.2/32 dev veth0"). In the last
+			 * case the gateway is directly reachable through that
+			 * interface even though there is no connected subnet.
+			 */
 			if ((match->type == ZEBRA_ROUTE_CONNECT ||
 			     match->type == ZEBRA_ROUTE_LOCAL) ||
-			    nexthop->ifindex == match_nh->ifindex) {
+			    nexthop->ifindex == match_nh->ifindex ||
+			    match_nh->type == NEXTHOP_TYPE_IFINDEX) {
 				nexthop->ifindex = match_nh->ifindex;
 				return 1;
 			}
@@ -712,12 +722,24 @@ static int nhlfe_nexthop_active_ipv6(struct zebra_nhlfe *nhlfe,
 
 	route_unlock_node(rn);
 
-	/* Locate a valid connected route. */
+	/*
+	 * Locate a valid route to reach the gateway directly: either a
+	 * connected/local route, or an on-link route reachable directly via an
+	 * interface with no gateway (e.g. a /128 link route), which also makes
+	 * the gateway directly reachable through that interface even though
+	 * there is no connected subnet.
+	 */
 	RNODE_FOREACH_RE (rn, match) {
-		if (((match->type == ZEBRA_ROUTE_CONNECT ||
-		      match->type == ZEBRA_ROUTE_LOCAL)) &&
-		    !CHECK_FLAG(match->status, ROUTE_ENTRY_REMOVED) &&
-		    CHECK_FLAG(match->flags, ZEBRA_FLAG_SELECTED))
+		if (CHECK_FLAG(match->status, ROUTE_ENTRY_REMOVED) ||
+		    !CHECK_FLAG(match->flags, ZEBRA_FLAG_SELECTED))
+			continue;
+
+		if (match->type == ZEBRA_ROUTE_CONNECT ||
+		    match->type == ZEBRA_ROUTE_LOCAL)
+			break;
+
+		if (match->nhe->nhg.nexthop &&
+		    match->nhe->nhg.nexthop->type == NEXTHOP_TYPE_IFINDEX)
 			break;
 	}
 

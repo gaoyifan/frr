@@ -1,3 +1,12 @@
+frr (10.6.1-0+mplsdev2) trixie; urgency=medium
+
+  * zebra: attach the egress interface to a static LSP gateway nexthop when the
+    gateway is reachable only via an on-link host/link route (e.g. a /32 route
+    "ip route add 10.0.0.2/32 dev veth0") with no connected subnet. Previously
+    such an LSP was left unresolved and never installed in the kernel LFIB.
+
+ -- Yifan Gao <gaoyifan@users.noreply.github.com>  Mon, 22 Jun 2026 19:55:00 +0000
+
 frr (10.6.1-0+mplsdev1) trixie; urgency=medium
 
   * Add "mpls lsp <label> dev IFNAME" CLI for interface-only static LSPs
