@@ -43,6 +43,15 @@ jobs:
           docker-image: debian:trixie
           buildpackage-opts: --build=binary --no-sign
 
+      # The build container runs as root, so debian/artifacts is root-owned.
+      # Copy the .deb files into a runner-writable directory for apt-repo-action.
+      - name: Collect packages
+        run: |
+          mkdir -p packages
+          sudo cp debian/artifacts/*.deb packages/
+          sudo chown -R "$(id -u):$(id -g)" packages
+          ls -l packages
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
@@ -51,7 +60,7 @@ jobs:
         uses: morph027/apt-repo-action@v3
         with:
           repo-name: frr
-          scan-dir: debian/artifacts
+          scan-dir: packages
           codename: ${{ env.CODENAME }}
           components: ${{ env.COMPONENTS }}
           architectures: ${{ env.ARCHITECTURES }}
