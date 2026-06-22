@@ -1,3 +1,71 @@
+<!-- PATCHED FORK NOTICE -->
+# FRRouting (patched fork) — `mpls lsp <label> dev IFNAME`
+
+This is a patched fork of FRRouting **10.6.1**. It adds support for
+interface-only static MPLS LSPs, i.e. an LSP that specifies only an outgoing
+interface and no gateway — the equivalent of:
+
+```bash
+sudo ip -M route add 18 dev dummy0
+```
+
+## New CLI
+
+```
+mpls lsp (16-1048575) dev IFNAME
+no mpls lsp (16-1048575) dev IFNAME
+```
+
+The outgoing label is forced to `implicit-null`, so the kernel pops the label
+and forwards out of the interface. `write memory` saves it back as
+`mpls lsp <label> dev <ifname>`.
+
+Example:
+
+```bash
+sudo vtysh -c 'conf t' -c 'mpls lsp 18 dev dummy0'
+sudo vtysh -c 'show mpls table 18'
+ip -M route show | grep '^18 '      # -> 18 dev dummy0 proto static
+```
+
+## Install from the APT repository (Debian 13 "trixie", amd64)
+
+Prebuilt, signed packages are published to GitHub Pages by the
+[`Publish APT repo`](.github/workflows/apt-repo.yml) workflow
+(built in a `debian:trixie` container via
+[`jtdor/build-deb-action`](https://github.com/jtdor/build-deb-action) and
+packaged with [`morph027/apt-repo-action`](https://github.com/morph027/apt-repo-action)).
+
+```bash
+# Remove the official FRR repo first to avoid version conflicts (if present):
+sudo rm -f /etc/apt/sources.list.d/frr.list
+
+# Trust the repo signing key:
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -sfLo /etc/apt/keyrings/frr-patched.asc https://gaoyifan.github.io/frr/gpg.key
+
+# Add the repository:
+echo "deb [signed-by=/etc/apt/keyrings/frr-patched.asc] https://gaoyifan.github.io/frr/ trixie main" \
+  | sudo tee /etc/apt/sources.list.d/frr-patched.list
+
+# Install:
+sudo apt-get update
+sudo apt-get install frr frr-pythontools
+```
+
+The patched packages use version `10.6.1-0+mplsdev1`.
+
+### Kernel prerequisites for MPLS
+
+```bash
+sudo modprobe mpls_router
+sudo sysctl -w net.mpls.platform_labels=100000
+# enable MPLS input on the interfaces you use, e.g.:
+sudo sysctl -w net.mpls.conf.dummy0.input=1
+```
+
+---
+
 <p align="center">
 <img src="http://docs.frrouting.org/en/latest/_static/frr-icon.svg" alt="Icon" width="20%"/>
 </p>
