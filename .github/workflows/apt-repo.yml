@@ -1,9 +1,9 @@
 ---
 name: Publish APT repo
 
-# Build the patched FRR Debian packages natively for amd64 and arm64 inside a
-# Debian trixie container, then publish them as a signed APT repository on
-# GitHub Pages.
+# Build the patched FRR Debian packages natively for amd64 and arm64 on
+# Debian 12 (bookworm) and Debian 13 (trixie), then publish them as a signed
+# APT repository (one suite per codename) on GitHub Pages.
 
 on:
   push:
@@ -23,7 +23,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CODENAME: trixie
   COMPONENTS: main
   ARCHITECTURES: amd64 arm64
 
@@ -33,26 +32,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - codename: bookworm
+            arch: amd64
             runner: ubuntu-latest
-          - arch: arm64
+            suffix: deb12
+          - codename: bookworm
+            arch: arm64
             runner: ubuntu-24.04-arm
+            suffix: deb12
+          - codename: trixie
+            arch: amd64
+            runner: ubuntu-latest
+            suffix: deb13
+          - codename: trixie
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            suffix: deb13
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build FRR .deb (Debian trixie, ${{ matrix.arch }})
+      # Debian 12 (bookworm) ships libyang too old for FRR 10.6
+      # (needs libyang-dev >= 3.0.3). FRR's official repo provides a recent
+      # libyang for bookworm, so use it as a build-time source there.
+      - name: Fetch FRR repo key (bookworm libyang build-dep)
+        if: matrix.codename == 'bookworm'
+        run: curl -sfL https://deb.frrouting.org/frr/keys.asc -o frr-repo-key.asc
+
+      - name: Build FRR .deb (Debian ${{ matrix.codename }}, ${{ matrix.arch }})
         uses: jtdor/build-deb-action@v1
         env:
           DEB_BUILD_OPTIONS: nocheck noautodbgsym
           DEB_BUILD_PROFILES: nocheck
         with:
-          docker-image: debian:trixie
+          docker-image: debian:${{ matrix.codename }}
+          extra-build-deps: devscripts
+          extra-repos: ${{ matrix.codename == 'bookworm' && 'deb https://deb.frrouting.org/frr bookworm frr-stable' || '' }}
+          extra-repo-keys: ${{ matrix.codename == 'bookworm' && 'frr-repo-key.asc' || '' }}
+          before-build-hook: >-
+            debchange --controlmaint --local "+${{ matrix.suffix }}"
+            "CI build for ${{ matrix.codename }}"
           buildpackage-opts: --build=binary --no-sign
 
       # The build container runs as root, so debian/artifacts is root-owned.
-      # Copy the .deb files into a runner-writable directory for upload.
       - name: Collect packages
         run: |
           mkdir -p packages
@@ -60,10 +83,33 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" packages
           ls -l packages
 
+      # On bookworm, the patched frr depends on a libyang that is not in stock
+      # Debian 12. Bundle the required libyang runtime package(s) from FRR's
+      # repo so our APT repo stays self-contained.
+      - name: Bundle libyang runtime deps (bookworm)
+        if: matrix.codename == 'bookworm'
+        run: |
+          set -eu
+          FRR_REPO="https://deb.frrouting.org/frr"
+          ARCH="${{ matrix.arch }}"
+          curl -sfL "$FRR_REPO/dists/bookworm/frr-stable/binary-$ARCH/Packages.gz" \
+            | gunzip > /tmp/frrpkgs
+          libs=$(dpkg-deb -f packages/frr_*_"$ARCH".deb Depends \
+            | tr ',' '\n' | grep -oE 'libyang[0-9a-z]*' | sort -u)
+          echo "frr runtime libyang deps: $libs"
+          for lib in $libs; do
+            fn=$(awk -v p="$lib" 'BEGIN{RS="";FS="\n"}{pk=0;fnm="";for(i=1;i<=NF;i++){if($i=="Package: "p)pk=1;if($i ~ /^Filename: /)fnm=substr($i,11)}if(pk&&fnm)print fnm}' /tmp/frrpkgs | head -1)
+            if [ -n "$fn" ]; then
+              echo "fetching $lib: $fn"
+              curl -sfL "$FRR_REPO/$fn" -o "packages/$(basename "$fn")"
+            fi
+          done
+          ls -l packages
+
       - name: Upload packages artifact
         uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.arch }}
+          name: debs-${{ matrix.codename }}-${{ matrix.arch }}
           path: packages/*.deb
           if-no-files-found: error
 
@@ -74,34 +120,66 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Download all package artifacts
+      - name: Download bookworm packages
         uses: actions/download-artifact@v4
         with:
-          pattern: debs-*
+          pattern: debs-bookworm-*
           merge-multiple: true
-          path: packages
+          path: packages/bookworm
+
+      - name: Download trixie packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debs-trixie-*
+          merge-multiple: true
+          path: packages/trixie
 
       - name: List packages
-        run: ls -l packages
+        run: ls -lR packages
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Create APT repo
-        id: apt-repo
+      - name: Create APT repo (bookworm)
+        id: repo-bookworm
         uses: morph027/apt-repo-action@v3
         with:
           repo-name: frr
-          scan-dir: packages
-          codename: ${{ env.CODENAME }}
+          scan-dir: packages/bookworm
+          codename: bookworm
           components: ${{ env.COMPONENTS }}
           architectures: ${{ env.ARCHITECTURES }}
           signing-key: ${{ secrets.SIGNING_KEY }}
 
+      - name: Create APT repo (trixie)
+        id: repo-trixie
+        uses: morph027/apt-repo-action@v3
+        with:
+          repo-name: frr
+          scan-dir: packages/trixie
+          codename: trixie
+          components: ${{ env.COMPONENTS }}
+          architectures: ${{ env.ARCHITECTURES }}
+          signing-key: ${{ secrets.SIGNING_KEY }}
+
+      # Each apt-repo-action run produces a self-contained tree for one
+      # codename. Merge them into a single site (shared pool + gpg.key, one
+      # dists/<codename> per suite).
+      - name: Merge codename repos
+        run: |
+          set -eu
+          rm -rf site
+          mkdir -p site
+          cp -a "${{ steps.repo-trixie.outputs.dir }}/." site/
+          cp -a "${{ steps.repo-bookworm.outputs.dir }}/dists/." site/dists/
+          cp -a "${{ steps.repo-bookworm.outputs.dir }}/pool/." site/pool/
+          chmod -R +rX site
+          echo "Published suites:"; ls site/dists
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ steps.apt-repo.outputs.dir }}
+          path: site
 
       - name: Deploy to GitHub Pages
         id: deployment
@@ -112,11 +190,11 @@ jobs:
           {
             echo '## APT repo published :rocket:'
             echo ''
-            echo "Architectures: ${{ env.ARCHITECTURES }}"
+            echo "Suites: bookworm, trixie | Architectures: ${{ env.ARCHITECTURES }}"
             echo ''
             echo '```bash'
             echo "sudo curl -sfLo /etc/apt/keyrings/frr-keyring.asc ${{ steps.deployment.outputs.page_url }}gpg.key"
-            echo "echo \"deb [signed-by=/etc/apt/keyrings/frr-keyring.asc] ${{ steps.deployment.outputs.page_url }} ${{ env.CODENAME }} ${{ env.COMPONENTS }}\" | sudo tee /etc/apt/sources.list.d/frr.list"
+            echo "echo \"deb [signed-by=/etc/apt/keyrings/frr-keyring.asc] ${{ steps.deployment.outputs.page_url }} \$(. /etc/os-release; echo \$VERSION_CODENAME) ${{ env.COMPONENTS }}\" | sudo tee /etc/apt/sources.list.d/frr.list"
             echo 'sudo apt-get update && sudo apt-get install frr'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

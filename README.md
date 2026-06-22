@@ -28,17 +28,23 @@ sudo vtysh -c 'show mpls table 18'
 ip -M route show | grep '^18 '      # -> 18 dev dummy0 proto static
 ```
 
-## Install from the APT repository (Debian 13 "trixie", amd64 / arm64)
+## Install from the APT repository
 
-Prebuilt, signed packages for **amd64 and arm64** are published to GitHub Pages
-by the [`Publish APT repo`](.github/workflows/apt-repo.yml) workflow. Each
-architecture is built natively (amd64 on `ubuntu-latest`, arm64 on
-`ubuntu-24.04-arm`) in a `debian:trixie` container via
+Prebuilt, signed packages are published to GitHub Pages by the
+[`Publish APT repo`](.github/workflows/apt-repo.yml) workflow. Supported targets:
+
+| Debian release | Suite (codename) | Architectures |
+| -------------- | ---------------- | ------------- |
+| Debian 12      | `bookworm`       | amd64, arm64  |
+| Debian 13      | `trixie`         | amd64, arm64  |
+
+Each package is built natively (amd64 on `ubuntu-latest`, arm64 on
+`ubuntu-24.04-arm`) in a `debian:<codename>` container via
 [`jtdor/build-deb-action`](https://github.com/jtdor/build-deb-action) and
 packaged with [`morph027/apt-repo-action`](https://github.com/morph027/apt-repo-action).
-
-`apt` automatically selects packages matching your machine's architecture
-(`dpkg --print-architecture`).
+`apt` automatically selects the package matching your machine's architecture
+(`dpkg --print-architecture`). The bookworm suite also bundles the newer
+`libyang` runtime it needs, so it is self-contained.
 
 ```bash
 # Remove the official FRR repo first to avoid version conflicts (if present):
@@ -48,8 +54,8 @@ sudo rm -f /etc/apt/sources.list.d/frr.list
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -sfLo /etc/apt/keyrings/frr-patched.asc https://gaoyifan.github.io/frr/gpg.key
 
-# Add the repository:
-echo "deb [signed-by=/etc/apt/keyrings/frr-patched.asc] https://gaoyifan.github.io/frr/ trixie main" \
+# Add the repository (uses your machine's codename automatically):
+echo "deb [signed-by=/etc/apt/keyrings/frr-patched.asc] https://gaoyifan.github.io/frr/ $(. /etc/os-release; echo "$VERSION_CODENAME") main" \
   | sudo tee /etc/apt/sources.list.d/frr-patched.list
 
 # Install:
@@ -57,7 +63,8 @@ sudo apt-get update
 sudo apt-get install frr frr-pythontools
 ```
 
-The patched packages use version `10.6.1-0+mplsdev1`.
+The patched packages are versioned `10.6.1-0+mplsdev1+deb12` (bookworm) and
+`10.6.1-0+mplsdev1+deb13` (trixie).
 
 ### Kernel prerequisites for MPLS
 
