@@ -174,6 +174,95 @@ DEFUN (no_mpls_transit_lsp_all,
 	return zebra_mpls_transit_lsp(vty, 0, argv[3]->arg, NULL, NULL, NULL);
 }
 
+/*
+ * Establish/remove a static LSP whose nexthop is an outgoing interface only
+ * (no gateway), equivalent to "ip -M route add <label> dev <ifname>".  The
+ * outgoing label is forced to implicit-null so the kernel pops the label and
+ * forwards out of the interface.
+ */
+static int zebra_mpls_transit_lsp_dev(struct vty *vty, int add_cmd,
+				      const char *inlabel_str,
+				      const char *ifname)
+{
+	struct zebra_vrf *zvrf;
+	struct interface *ifp;
+	mpls_label_t in_label;
+	int ret;
+
+	if (!mpls_enabled) {
+		vty_out(vty,
+			"%% MPLS not turned on in kernel, ignoring command\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	zvrf = zebra_vrf_lookup_by_id(VRF_DEFAULT);
+
+	if (!inlabel_str) {
+		vty_out(vty, "%% No Label Information\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	in_label = atoi(inlabel_str);
+	if (!IS_MPLS_UNRESERVED_LABEL(in_label)) {
+		vty_out(vty, "%% Invalid label\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	if (!ifname) {
+		vty_out(vty, "%% No outgoing interface specified\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	ifp = if_lookup_by_name(ifname, VRF_DEFAULT);
+	if (!ifp) {
+		vty_out(vty, "%% Interface %s does not exist\n", ifname);
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	if (add_cmd)
+		ret = zebra_mpls_static_lsp_add(zvrf, in_label,
+						MPLS_LABEL_IMPLICIT_NULL,
+						NEXTHOP_TYPE_IFINDEX, NULL,
+						ifp->ifindex);
+	else
+		ret = zebra_mpls_static_lsp_del(zvrf, in_label,
+						NEXTHOP_TYPE_IFINDEX, NULL,
+						ifp->ifindex);
+
+	if (ret != 0) {
+		vty_out(vty, "%% LSP cannot be %s\n",
+			add_cmd ? "added" : "deleted");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+
+	return CMD_SUCCESS;
+}
+
+DEFUN (mpls_transit_lsp_dev,
+       mpls_transit_lsp_dev_cmd,
+       "mpls lsp (16-1048575) dev IFNAME",
+       MPLS_STR
+       "Establish label switched path\n"
+       "Incoming MPLS label\n"
+       "Outgoing interface (no gateway, pop and forward)\n"
+       "Interface name\n")
+{
+	return zebra_mpls_transit_lsp_dev(vty, 1, argv[2]->arg, argv[4]->arg);
+}
+
+DEFUN (no_mpls_transit_lsp_dev,
+       no_mpls_transit_lsp_dev_cmd,
+       "no mpls lsp (16-1048575) dev IFNAME",
+       NO_STR
+       MPLS_STR
+       "Establish label switched path\n"
+       "Incoming MPLS label\n"
+       "Outgoing interface (no gateway, pop and forward)\n"
+       "Interface name\n")
+{
+	return zebra_mpls_transit_lsp_dev(vty, 0, argv[3]->arg, argv[5]->arg);
+}
+
 static int zebra_mpls_bind(struct vty *vty, int add_cmd, const char *prefix,
 			   const char *label_str)
 {
@@ -439,7 +528,9 @@ void zebra_mpls_vty_init(void)
 	install_node(&mpls_node);
 
 	install_element(CONFIG_NODE, &mpls_transit_lsp_cmd);
+	install_element(CONFIG_NODE, &mpls_transit_lsp_dev_cmd);
 	install_element(CONFIG_NODE, &no_mpls_transit_lsp_cmd);
+	install_element(CONFIG_NODE, &no_mpls_transit_lsp_dev_cmd);
 	install_element(CONFIG_NODE, &no_mpls_transit_lsp_out_label_cmd);
 	install_element(CONFIG_NODE, &no_mpls_transit_lsp_all_cmd);
 

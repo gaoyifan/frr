@@ -3916,6 +3916,18 @@ int zebra_mpls_write_lsp_config(struct vty *vty, struct zebra_vrf *zvrf)
 
 			nhlfe_config_str(nhlfe, buf, sizeof(buf));
 
+			/*
+			 * Interface-only nexthop (no gateway) is configured
+			 * with the "dev IFNAME" syntax, equivalent to
+			 * "ip -M route add <label> dev <ifname>".  Emit it in a
+			 * form that can be parsed back by the CLI.
+			 */
+			if (nh->type == NEXTHOP_TYPE_IFINDEX) {
+				vty_out(vty, "mpls lsp %u dev %s\n",
+					lsp->ile.in_label, buf);
+				continue;
+			}
+
 			switch (nh->nh_label->label[0]) {
 			case MPLS_LABEL_IPV4_EXPLICIT_NULL:
 			case MPLS_LABEL_IPV6_EXPLICIT_NULL:

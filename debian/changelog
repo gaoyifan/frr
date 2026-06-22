@@ -1,3 +1,12 @@
+frr (10.6.1-0+mplsdev1) trixie; urgency=medium
+
+  * Add "mpls lsp <label> dev IFNAME" CLI for interface-only static LSPs
+    (equivalent to "ip -M route add <label> dev <ifname>").
+  * Emit interface-only static LSPs as "mpls lsp <label> dev <ifname>" in the
+    saved configuration so it can be parsed back.
+
+ -- Yifan Gao <gaoyifan@users.noreply.github.com>  Mon, 22 Jun 2026 12:00:00 +0000
+
 frr (10.6.1-0) unstable; urgency=medium
 
   * New upstream release FRR 10.6.1

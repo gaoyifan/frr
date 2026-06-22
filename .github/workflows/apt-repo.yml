@@ -1,0 +1,79 @@
+---
+name: Publish APT repo
+
+# Build the patched FRR Debian packages inside a Debian trixie container and
+# publish them as a signed APT repository on GitHub Pages.
+
+on:
+  push:
+    branches:
+      - apt-publish
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CODENAME: trixie
+  COMPONENTS: main
+  ARCHITECTURES: amd64
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build FRR .deb (Debian trixie)
+        uses: jtdor/build-deb-action@v1
+        env:
+          DEB_BUILD_OPTIONS: nocheck noautodbgsym
+          DEB_BUILD_PROFILES: nocheck
+        with:
+          docker-image: debian:trixie
+          buildpackage-opts: --build=binary --no-sign
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Create APT repo
+        id: apt-repo
+        uses: morph027/apt-repo-action@v3
+        with:
+          repo-name: frr
+          scan-dir: debian/artifacts
+          codename: ${{ env.CODENAME }}
+          components: ${{ env.COMPONENTS }}
+          architectures: ${{ env.ARCHITECTURES }}
+          signing-key: ${{ secrets.SIGNING_KEY }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.apt-repo.outputs.dir }}
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Summary
+        run: |
+          {
+            echo '## APT repo published :rocket:'
+            echo ''
+            echo '```bash'
+            echo "sudo curl -sfLo /etc/apt/keyrings/frr-keyring.asc ${{ steps.deployment.outputs.page_url }}gpg.key"
+            echo "echo \"deb [signed-by=/etc/apt/keyrings/frr-keyring.asc] ${{ steps.deployment.outputs.page_url }} ${{ env.CODENAME }} ${{ env.COMPONENTS }}\" | sudo tee /etc/apt/sources.list.d/frr.list"
+            echo 'sudo apt-get update && sudo apt-get install frr'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
