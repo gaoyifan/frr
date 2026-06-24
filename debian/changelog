@@ -1,3 +1,14 @@
+frr (10.6.1-0+mplsdev3) trixie; urgency=medium
+
+  * zebra: track "mpls lsp <label> dev IFNAME" static LSPs by interface name
+    and re-resolve the ifindex on interface up/down, so the LSP follows an
+    ifindex change across a flap (e.g. a PPP redial) instead of getting pinned
+    to a stale ifindex ("dev unknown"). The CLI now accepts the command before
+    the interface exists (boot/PPP not yet dialed) and "write memory" emits the
+    tracked name.
+
+ -- Yifan Gao <gaoyifan@users.noreply.github.com>  Wed, 24 Jun 2026 09:30:00 +0000
+
 frr (10.6.1-0+mplsdev2) trixie; urgency=medium
 
   * zebra: attach the egress interface to a static LSP gateway nexthop when the
