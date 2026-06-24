@@ -22,6 +22,7 @@
 #include "zebra/rtadv.h"
 #include "zebra_ns.h"
 #include "zebra_vrf.h"
+#include "zebra_mpls.h"
 #include "zebra/interface.h"
 #include "zebra/rib.h"
 #include "zebra/rt.h"
@@ -1006,6 +1007,10 @@ void if_up(struct interface *ifp, bool install_connected)
 	if_handle_bond_speed_change(ifp);
 
 	rib_update_handle_vrf_all(RIB_UPDATE_KERNEL, ZEBRA_ROUTE_KERNEL);
+
+	/* Re-resolve interface-only ("dev IFNAME") static LSPs to this
+	 * interface's (possibly new) ifindex, e.g. after a PPP redial. */
+	zebra_mpls_if_update(ifp);
 }
 
 /* Interface goes down.  We have to manage different behavior of based
@@ -1060,6 +1065,10 @@ void if_down(struct interface *ifp)
 	if_handle_bond_speed_change(ifp);
 
 	rib_update_handle_vrf_all(RIB_UPDATE_INTERFACE_DOWN, ZEBRA_ROUTE_KERNEL);
+
+	/* Withdraw interface-only ("dev IFNAME") static LSPs bound to this
+	 * interface now that it is down. */
+	zebra_mpls_if_update(ifp);
 }
 
 void if_refresh(struct interface *ifp)

@@ -108,7 +108,7 @@ static int zebra_mpls_transit_lsp(struct vty *vty, int add_cmd,
 #endif /* HAVE_CUMULUS */
 
 		ret = zebra_mpls_static_lsp_add(zvrf, in_label, out_label,
-						gtype, &gate, 0);
+						gtype, &gate, 0, NULL);
 	} else
 		ret = zebra_mpls_static_lsp_del(zvrf, in_label, gtype, &gate,
 						0);
@@ -213,21 +213,33 @@ static int zebra_mpls_transit_lsp_dev(struct vty *vty, int add_cmd,
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	ifp = if_lookup_by_name(ifname, VRF_DEFAULT);
-	if (!ifp) {
-		vty_out(vty, "%% Interface %s does not exist\n", ifname);
-		return CMD_WARNING_CONFIG_FAILED;
-	}
+	if (add_cmd) {
+		ifindex_t ifindex = IFINDEX_INTERNAL;
 
-	if (add_cmd)
+		/*
+		 * Use if_get_by_name() so the LSP can be configured before the
+		 * interface exists (e.g. a PPP link that has not dialed yet, or
+		 * config replayed at boot). The interface is tracked by name and
+		 * its ifindex is (re)resolved on interface up/down events.
+		 */
+		ifp = if_get_by_name(ifname, VRF_DEFAULT, NULL);
+		if (ifp && if_is_operative(ifp))
+			ifindex = ifp->ifindex;
+
 		ret = zebra_mpls_static_lsp_add(zvrf, in_label,
 						MPLS_LABEL_IMPLICIT_NULL,
 						NEXTHOP_TYPE_IFINDEX, NULL,
-						ifp->ifindex);
-	else
+						ifindex, ifname);
+	} else {
+		/*
+		 * Remove the whole label entry: matching by ifindex would fail
+		 * if the interface flapped (or is down) since it was configured.
+		 * A "dev IFNAME" LSP is the only NHLFE for its label here.
+		 */
 		ret = zebra_mpls_static_lsp_del(zvrf, in_label,
-						NEXTHOP_TYPE_IFINDEX, NULL,
-						ifp->ifindex);
+						NEXTHOP_TYPE_BLACKHOLE, NULL,
+						0);
+	}
 
 	if (ret != 0) {
 		vty_out(vty, "%% LSP cannot be %s\n",

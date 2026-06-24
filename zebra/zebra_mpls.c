@@ -770,16 +770,23 @@ static int nhlfe_nexthop_active(struct zebra_nhlfe *nhlfe)
 	switch (nexthop->type) {
 	case NEXTHOP_TYPE_IFINDEX:
 		/*
-		 * Lookup if this type is special.  The
-		 * NEXTHOP_TYPE_IFINDEX is a pop and
-		 * forward into a different table for
-		 * processing.  As such this ifindex
-		 * passed to us may be a VRF device
-		 * which will not be in the default
-		 * VRF.  So let's look in all of them
+		 * For an interface-only ("mpls lsp <label> dev IFNAME") static
+		 * LSP the outgoing interface is tracked by name, so re-resolve
+		 * the ifindex here on every check. This lets the LSP follow an
+		 * ifindex change across a flap (e.g. a PPP redial) instead of
+		 * staying pinned to a stale ifindex.
+		 *
+		 * Otherwise fall back to the stored ifindex. Note the ifindex
+		 * may be a VRF device that is not in the default VRF, so look
+		 * across all of them.
 		 */
-		zns = zebra_ns_lookup(NS_DEFAULT);
-		ifp = if_lookup_by_index_per_ns(zns, nexthop->ifindex);
+		if (nhlfe->ifname[0]) {
+			ifp = if_lookup_by_name(nhlfe->ifname, nexthop->vrf_id);
+			nexthop->ifindex = ifp ? ifp->ifindex : IFINDEX_INTERNAL;
+		} else {
+			zns = zebra_ns_lookup(NS_DEFAULT);
+			ifp = if_lookup_by_index_per_ns(zns, nexthop->ifindex);
+		}
 		if (ifp && if_is_operative(ifp))
 			SET_FLAG(nexthop->flags, NEXTHOP_FLAG_ACTIVE);
 		else
@@ -3589,7 +3596,7 @@ int zebra_mpls_lsp_label_consistent(struct zebra_vrf *zvrf,
 int zebra_mpls_static_lsp_add(struct zebra_vrf *zvrf, mpls_label_t in_label,
 			      mpls_label_t out_label,
 			      enum nexthop_types_t gtype, union g_addr *gate,
-			      ifindex_t ifindex)
+			      ifindex_t ifindex, const char *ifname)
 {
 	struct hash *slsp_table;
 	struct zebra_ile tmp_ile;
@@ -3606,16 +3613,40 @@ int zebra_mpls_static_lsp_add(struct zebra_vrf *zvrf, mpls_label_t in_label,
 	tmp_ile.in_label = in_label;
 	lsp = hash_get(slsp_table, &tmp_ile, lsp_alloc);
 
-	nhlfe = nhlfe_find(&lsp->nhlfe_list, ZEBRA_LSP_STATIC, gtype, gate,
-			   ifindex);
+	if (ifname) {
+		/*
+		 * Interface-only ("dev IFNAME") static LSP: match an existing
+		 * NHLFE by interface name rather than ifindex, so that an
+		 * ifindex change since it was configured (e.g. a PPP redial)
+		 * does not leave a stale duplicate, and refresh its ifindex.
+		 */
+		struct zebra_nhlfe *iter;
+
+		nhlfe = NULL;
+		frr_each(nhlfe_list, &lsp->nhlfe_list, iter) {
+			if (iter->type == ZEBRA_LSP_STATIC && iter->nexthop &&
+			    iter->nexthop->type == NEXTHOP_TYPE_IFINDEX &&
+			    strcmp(iter->ifname, ifname) == 0) {
+				nhlfe = iter;
+				nhlfe->nexthop->ifindex = ifindex;
+				break;
+			}
+		}
+	} else
+		nhlfe = nhlfe_find(&lsp->nhlfe_list, ZEBRA_LSP_STATIC, gtype,
+				   gate, ifindex);
+
 	if (nhlfe) {
 		struct nexthop *nh = nhlfe->nexthop;
 
 		assert(nh);
 		assert(nh->nh_label);
 
-		/* Compare existing nexthop */
-		if (nh->nh_label->num_labels == 1 &&
+		/*
+		 * Compare existing nexthop. For "dev IFNAME" LSPs always fall
+		 * through so the ifindex refresh above is (re)installed.
+		 */
+		if (!ifname && nh->nh_label->num_labels == 1 &&
 		    nh->nh_label->label[0] == out_label)
 			/* No change */
 			return 0;
@@ -3649,12 +3680,55 @@ int zebra_mpls_static_lsp_add(struct zebra_vrf *zvrf, mpls_label_t in_label,
 		}
 	}
 
+	/* Track the outgoing interface by name for "dev IFNAME" LSPs. */
+	if (ifname)
+		strlcpy(nhlfe->ifname, ifname, sizeof(nhlfe->ifname));
+
 	/* (Re)Install LSP in the main table. */
 	if (mpls_lsp_install(zvrf, ZEBRA_LSP_STATIC, in_label, 1, &out_label,
 			     gtype, gate, ifindex))
 		return -1;
 
+	/*
+	 * Mirror the interface name onto the installed NHLFE(s) so that
+	 * nhlfe_nexthop_active() can re-resolve the ifindex after a flap.
+	 */
+	if (ifname) {
+		struct zebra_lsp *ilsp;
+		struct zebra_nhlfe *inhlfe;
+
+		ilsp = hash_lookup(zvrf->lsp_table, &tmp_ile);
+		if (ilsp) {
+			frr_each(nhlfe_list, &ilsp->nhlfe_list, inhlfe) {
+				if (inhlfe->type == ZEBRA_LSP_STATIC &&
+				    inhlfe->nexthop &&
+				    inhlfe->nexthop->type ==
+					    NEXTHOP_TYPE_IFINDEX)
+					strlcpy(inhlfe->ifname, ifname,
+						sizeof(inhlfe->ifname));
+			}
+		}
+	}
+
 	return 0;
+}
+
+/*
+ * Reprocess static LSPs after an interface state change, so that
+ * interface-only ("mpls lsp <label> dev IFNAME") LSPs follow ifindex
+ * changes (e.g. a PPP redial). nhlfe_nexthop_active() re-resolves the
+ * tracked interface name; here we just (re)schedule processing.
+ */
+void zebra_mpls_if_update(struct interface *ifp)
+{
+	struct zebra_vrf *zvrf;
+
+	if (!ifp)
+		return;
+
+	zvrf = zebra_vrf_lookup_by_id(VRF_DEFAULT);
+	if (zvrf)
+		zebra_mpls_lsp_schedule(zvrf);
 }
 
 /*
@@ -3945,8 +4019,15 @@ int zebra_mpls_write_lsp_config(struct vty *vty, struct zebra_vrf *zvrf)
 			 * form that can be parsed back by the CLI.
 			 */
 			if (nh->type == NEXTHOP_TYPE_IFINDEX) {
+				/*
+				 * Render the tracked interface name so the
+				 * config stays correct (and re-parseable) even
+				 * while the interface is down and its ifindex
+				 * is unresolved.
+				 */
 				vty_out(vty, "mpls lsp %u dev %s\n",
-					lsp->ile.in_label, buf);
+					lsp->ile.in_label,
+					nhlfe->ifname[0] ? nhlfe->ifname : buf);
 				continue;
 			}
 

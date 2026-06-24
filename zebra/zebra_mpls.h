@@ -60,6 +60,15 @@ struct zebra_nhlfe {
 
 	uint8_t distance;
 
+	/*
+	 * Outgoing interface name for interface-only ("mpls lsp <label> dev
+	 * IFNAME") static LSPs. Empty for all other NHLFEs. Tracking the
+	 * interface by name (rather than only by the ifindex stored in the
+	 * nexthop) lets the LSP follow an ifindex change across a flap, e.g. a
+	 * PPP redial, instead of getting pinned to a stale ifindex.
+	 */
+	char ifname[IFNAMSIZ];
+
 	/* Linkage for LSPs' lists */
 	struct nhlfe_list_item list;
 };
@@ -331,7 +340,7 @@ int zebra_mpls_lsp_label_consistent(struct zebra_vrf *zvrf,
 int zebra_mpls_static_lsp_add(struct zebra_vrf *zvrf, mpls_label_t in_label,
 			      mpls_label_t out_label,
 			      enum nexthop_types_t gtype, union g_addr *gate,
-			      ifindex_t ifindex);
+			      ifindex_t ifindex, const char *ifname);
 
 /*
  * Delete static LSP entry. This may be the delete of one particular
@@ -361,6 +370,13 @@ void zebra_mpls_process_dplane_notify(struct zebra_dplane_ctx *ctx);
  * interface or nexthop state changes.
  */
 void zebra_mpls_lsp_schedule(struct zebra_vrf *zvrf);
+
+/*
+ * Reprocess static LSPs after an interface state change, so that
+ * interface-only ("mpls lsp <label> dev IFNAME") LSPs follow ifindex
+ * changes (e.g. a PPP redial). Called from if_up()/if_down().
+ */
+void zebra_mpls_if_update(struct interface *ifp);
 
 /*
  * Display MPLS label forwarding table for a specific LSP
